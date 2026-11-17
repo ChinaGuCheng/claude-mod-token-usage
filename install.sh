@@ -26,6 +26,6 @@ j["env"]["CLAUDE_CODE_PLUGIN_DIR_WATCH"] = "1"
 json.dump(j, open(p, "w"), indent=2)
 PY
 
-echo "已安裝到 $DEST"
-echo "設定已更新（備份：$SETTINGS.bak-token-usage）"
-echo "請完全關閉並重新開啟 Claude Desktop。"
+echo "已安装到 $DEST"
+echo "设置已更新（备份：$SETTINGS.bak-token-usage）"
+echo "请完全关闭并重新打开 Claude Desktop 或 VS Code。"

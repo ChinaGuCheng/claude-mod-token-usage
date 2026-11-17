@@ -18,6 +18,6 @@ $j.env | Add-Member -Force -NotePropertyName CLAUDE_CODE_PLUGIN_DIRS -NoteProper
 $j.env | Add-Member -Force -NotePropertyName CLAUDE_CODE_PLUGIN_DIR_WATCH -NotePropertyValue '1'
 $j | ConvertTo-Json -Depth 20 | Set-Content $settings -Encoding utf8
 
-Write-Host "已安裝到 $dest"
-Write-Host "設定已更新（備份：$settings.bak-token-usage）"
-Write-Host "請完全關閉並重新開啟 Claude Desktop。"
+Write-Host "已安装到 $dest"
+Write-Host "设置已更新（备份：$settings.bak-token-usage）"
+Write-Host "请完全关闭并重新打开 Claude Desktop 或 VS Code。"
