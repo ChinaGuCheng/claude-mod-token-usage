@@ -3,7 +3,7 @@ import type { Register, RenderChildren } from 'claude-code'
 
 import type { Snap, Win } from '../types'
 
-const EMPTY: Snap = { five: null, seven: null, usd: null, tokIn: 0, tokOut: 0, tokCache: 0, tps: null, tpsOut: 0, tpsMs: 0 }
+const EMPTY: Snap = { five: null, seven: null, usd: null, tokIn: 0, tokOut: 0, tokCache: 0, spd: null, spdOut: 0, spdMs: 0 }
 const snap = atom({ plugin: 'token-usage', key: 'snap' } as const, EMPTY)
 
 const tick = atom({ plugin: 'token-usage', key: 'tick' } as const, 0)
@@ -48,7 +48,22 @@ const save = async ($: any) => {
 const H = 3600_000
 // a request that streams only a few tokens arrives in one burst, so its rate is noise
 const MIN_TOKENS = 50
-const MIN_DECODE_MS = 250
+const MIN_GEN_MS = 250
+// faster than any model streams: a reading above it means the stream arrived in a burst
+const MAX_TPS = 1000
+
+// The time a step's output took. First choice: from the response's first chunk of any kind (the
+// envelope included, so thinking that is not streamed still counts) to its stop. When that window
+// is too short or gives an impossible speed, the chunks were held back and arrived together (a
+// buffering gateway, or chunks handed to this module in batches), so fall back to the whole
+// request, from sending it to the stop: that includes the wait for the first token and can only
+// read low, never high. Null when neither is measurable.
+const genMs = (out: number, sentAt: number, firstAt: number | undefined, stopAt: number): number | null => {
+  if (out < MIN_TOKENS) return null
+  const ok = (ms: number) => ms >= MIN_GEN_MS && (out / ms) * 1000 <= MAX_TPS
+  if (firstAt !== undefined && ok(stopAt - firstAt)) return stopAt - firstAt
+  return ok(stopAt - sentAt) ? stopAt - sentAt : null
+}
 const k = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : `${n}`)
 
 const left = (iso: string | undefined, now: number) => {
@@ -157,9 +172,9 @@ const strip = (v: Snap, now: number) => {
   add(chip(x, 'down', k(v.tokOut), '#10B981', '#34D399', `输出 token：模型在本会话生成的内容共 ${k(v.tokOut)}&#10;精确值：${v.tokOut.toLocaleString()}`))
   add(chip(x, 'layers', k(v.tokCache), '#6366F1', '#818CF8', `缓存读取 token：从提示缓存重复使用 ${k(v.tokCache)}，计费比普通输入低&#10;精确值：${v.tokCache.toLocaleString()}`), 18)
   if (v.usd !== null) add(chip(x, 'coin', `$${v.usd.toFixed(2)}`, '#F59E0B', '#FBBF24', `会话费用：按 API 标价估算约 $${v.usd.toFixed(2)} 美元`))
-  if (v.tps !== null) {
-    const avg = v.tpsMs > 0 ? Math.round((v.tpsOut / v.tpsMs) * 1000) : Math.round(v.tps)
-    add(chip(x, 'bolt', `${Math.round(v.tps)} t/s`, '#06B6D4', '#22D3EE', `输出速度：最近一次约 ${Math.round(v.tps)} token/秒&#10;本会话平均 ${avg} token/秒（不含等待首字的时间）`))
+  if (typeof v.spd === 'number') {
+    const avg = v.spdMs > 0 ? Math.round((v.spdOut / v.spdMs) * 1000) : Math.round(v.spd)
+    add(chip(x, 'bolt', `${Math.round(v.spd)} t/s`, '#06B6D4', '#22D3EE', `输出速度：最近一次约 ${Math.round(v.spd)} token/秒&#10;本会话平均 ${avg} token/秒&#10;从收到第一块回复算起；回复一次性涌来测不准时，改从发出请求算起`))
   }
   const w = Math.ceil(x - 8)
   return { w, svg: `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="28" viewBox="0 0 ${w} 28"><style>:root{color-scheme:light dark;background:transparent}.p{cursor:pointer}.p .h{transition:fill-opacity .12s,stroke-opacity .12s,stroke-width .12s}.p:hover .h{fill-opacity:.3;stroke-opacity:.95;stroke-width:1.5}.p:active .h{fill-opacity:.45}</style>${parts.join('')}</svg>` }
@@ -215,19 +230,20 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // tokens/s: time the main loop's streamed requests from the first chunk to the stop chunk
+  // tokens/s of the main loop's requests; see genMs for how the time is taken
   on('turn.step', async function* ($, e, next) {
     const isMain = e.agentId === undefined
+    const sentAt = performance.now()
     const stream = next(e)
     let firstAt: number | undefined
     for await (const chunk of stream) {
       const now = performance.now()
-      firstAt ??= now
-      if (isMain && chunk.kind === 'stop' && chunk.usage) {
+      if (chunk.kind !== 'stop') firstAt ??= now
+      else if (isMain && chunk.usage) {
         const out = chunk.usage.output_tokens
-        const ms = now - firstAt
-        if (out >= MIN_TOKENS && ms >= MIN_DECODE_MS) {
-          await update($, snap, v => ({ ...v, tps: (out / ms) * 1000, tpsOut: v.tpsOut + out, tpsMs: v.tpsMs + ms })).catch(() => {})
+        const ms = genMs(out, sentAt, firstAt, now)
+        if (ms !== null) {
+          await update($, snap, v => ({ ...v, spd: (out / ms) * 1000, spdOut: (v.spdOut ?? 0) + out, spdMs: (v.spdMs ?? 0) + ms })).catch(() => {})
           await save($)
         }
       }
@@ -267,14 +283,14 @@ export const register: Register = on => {
 
     // folded: one dim line with the two numbers people check most, the unfold link on the right
     if (folded) {
-      const bits = [v.usd !== null && `$${v.usd.toFixed(2)}`, v.tps !== null && `${Math.round(v.tps)} t/s`].filter(Boolean)
+      const bits = [v.usd !== null && `$${v.usd.toFixed(2)}`, typeof v.spd === 'number' && `${Math.round(v.spd)} t/s`].filter(Boolean)
       return row(<Text dimColor>{bits.join(' · ')}</Text>, link('▴'))
     }
 
     if ('Svg' in t) {
       const { Svg } = t
       const { w, svg } = strip(v, now)
-      return row(<Svg source={svg} alt="5h / 7d 额度、token 与花费" width={w} height={28} isInteractive />, link('▾'))
+      return row(<Svg source={svg} alt="" width={w} height={28} isInteractive />, link('▾'))
     }
 
     const line = [
@@ -282,7 +298,7 @@ export const register: Register = on => {
       v.seven && `7d ${bar(v.seven, 7 * 24 * H, now)} ${Math.round(v.seven.used)}% ↻ ${left(v.seven.resetsAt, now)}`,
       `⇧ ${k(v.tokIn)}  ⇩ ${k(v.tokOut)}  ▤ ${k(v.tokCache)}`,
       v.usd !== null && `$${v.usd.toFixed(2)}`,
-      v.tps !== null && `⚡ ${Math.round(v.tps)} t/s`,
+      typeof v.spd === 'number' && `⚡ ${Math.round(v.spd)} t/s`,
     ].filter(Boolean).join('  │  ')
     return <Box><Text>{line}</Text></Box>
   })

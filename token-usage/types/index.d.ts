@@ -7,9 +7,9 @@ export type Snap = {
   tokOut: number
   tokCache: number
   // tokens/s of the latest long-enough main-loop request; the totals give the session average
-  tps: number | null
-  tpsOut: number
-  tpsMs: number
+  spd: number | null
+  spdOut: number
+  spdMs: number
 }
 
 declare module 'claude-code' {
